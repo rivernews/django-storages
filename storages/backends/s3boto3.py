@@ -1,10 +1,11 @@
+import gzip
 import io
 import mimetypes
 import os
 import posixpath
 import threading
 import warnings
-from gzip import GzipFile
+from contextlib import closing
 from tempfile import SpooledTemporaryFile
 
 from django.conf import settings as django_settings
@@ -94,7 +95,7 @@ class S3Boto3StorageFile(File):
                 self.obj.download_fileobj(self._file)
                 self._file.seek(0)
             if self._storage.gzip and self.obj.content_encoding == 'gzip':
-                self._file = GzipFile(mode=self._mode, fileobj=self._file, mtime=0.0)
+                self._file = gzip.GzipFile(mode=self._mode, fileobj=self._file, mtime=0.0)
         return self._file
 
     def _set_file(self, value):
@@ -436,25 +437,6 @@ class S3Boto3Storage(Storage):
     def _decode_name(self, name):
         return force_text(name, encoding=self.file_name_charset)
 
-    def _compress_content(self, content):
-        """Gzip a given string content."""
-        content.seek(0)
-        zbuf = io.BytesIO()
-        #  The GZIP header has a modification time attribute (see http://www.zlib.org/rfc-gzip.html)
-        #  This means each time a file is compressed it changes even if the other contents don't change
-        #  For S3 this defeats detection of changes using MD5 sums on gzipped files
-        #  Fixing the mtime at 0.0 at compression time avoids this problem
-        zfile = GzipFile(mode='wb', fileobj=zbuf, mtime=0.0)
-        try:
-            zfile.write(force_bytes(content.read()))
-        finally:
-            zfile.close()
-        zbuf.seek(0)
-        # Boto 2 returned the InMemoryUploadedFile with the file pointer replaced,
-        # but Boto 3 seems to have issues with that. No need for fp.name in Boto3
-        # so just returning the BytesIO directly
-        return zbuf
-
     def _open(self, name, mode='rb'):
         name = self._normalize_name(self._clean_name(name))
         try:
@@ -479,7 +461,12 @@ class S3Boto3Storage(Storage):
         parameters['ContentType'] = content_type
 
         if self.gzip and content_type in self.gzip_content_types:
-            content = self._compress_content(content)
+            zbuf = io.BytesIO()
+            # Fix mtime to 0.0 for a consistent file hash
+            with closing(gzip.GzipFile(mode='wb', fileobj=zbuf, mtime=0.0)) as zfile:
+                zfile.write(force_bytes(content.read()))
+            zbuf.seek(0)
+            content = zbuf
             parameters['ContentEncoding'] = 'gzip'
         elif encoding:
             # If the content already has a particular encoding, set it

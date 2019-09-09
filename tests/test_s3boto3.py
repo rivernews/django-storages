@@ -228,15 +228,6 @@ class S3Boto3StorageTests(S3Boto3TestCase):
         zfile = gzip.GzipFile(mode='rb', fileobj=content)
         self.assertEqual(zfile.read(), b"I should be gzip'd")
 
-    def test_compress_content_len(self):
-        """
-        Test that file returned by _compress_content() is readable.
-        """
-        self.storage.gzip = True
-        content = ContentFile("I should be gzip'd")
-        content = self.storage._compress_content(content)
-        self.assertTrue(len(content.read()) > 0)
-
     def test_storage_open_write(self):
         """
         Test opening a file in write mode
