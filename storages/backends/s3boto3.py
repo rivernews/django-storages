@@ -1,5 +1,4 @@
 import gzip
-import io
 import mimetypes
 import os
 import posixpath
@@ -10,7 +9,7 @@ from tempfile import SpooledTemporaryFile
 
 from django.conf import settings as django_settings
 from django.core.exceptions import ImproperlyConfigured, SuspiciousOperation
-from django.core.files.base import File
+from django.core.files.base import ContentFile, File
 from django.core.files.storage import Storage
 from django.utils.deconstruct import deconstructible
 from django.utils.encoding import (
@@ -461,12 +460,12 @@ class S3Boto3Storage(Storage):
         parameters['ContentType'] = content_type
 
         if self.gzip and content_type in self.gzip_content_types:
-            zbuf = io.BytesIO()
+            fileobj = ContentFile(b'', name=name)
             # Fix mtime to 0.0 for a consistent file hash
-            with closing(gzip.GzipFile(mode='wb', fileobj=zbuf, mtime=0.0)) as zfile:
+            with closing(gzip.GzipFile(mode='wb', fileobj=fileobj, mtime=0.0)) as zfile:
                 zfile.write(force_bytes(content.read()))
-            zbuf.seek(0)
-            content = zbuf
+            content = fileobj
+            content.seek(0, os.SEEK_SET)
             parameters['ContentEncoding'] = 'gzip'
         elif encoding:
             # If the content already has a particular encoding, set it
@@ -477,17 +476,11 @@ class S3Boto3Storage(Storage):
         if self.preload_metadata:
             self._entries[encoded_name] = obj
 
-        # If both `name` and `content.name` are empty or None, your request
-        # can be rejected with `XAmzContentSHA256Mismatch` error, because in
-        # `django.core.files.storage.Storage.save` method your file-like object
-        # will be wrapped in `django.core.files.File` if no `chunks` method
-        # provided. `File.__bool__`  method is Django-specific and depends on
-        # file name, for this reason`botocore.handlers.calculate_md5` can fail
-        # even if wrapped file-like object exists. To avoid Django-specific
-        # logic, pass internal file-like object if `content` is `File`
-        # class instance.
-        if isinstance(content, File):
-            content = content.file
+        # If `content.name` is empty or None, your request can be rejected
+        # with `XAmzContentSHA256Mismatch` error, because Django's File.__bool__
+        # (wrapped by parent .save method) is based on file.name
+        if not content.name:
+            content.name = name
 
         obj.upload_fileobj(content, ExtraArgs=parameters)
         return cleaned_name
