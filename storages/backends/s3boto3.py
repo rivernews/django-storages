@@ -466,22 +466,24 @@ class S3Boto3Storage(Storage):
         return f
 
     def _save(self, name, content):
+        content.seek(0, os.SEEK_SET)
         cleaned_name = self._clean_name(name)
         name = self._normalize_name(cleaned_name)
-        parameters = self.object_parameters.copy()
+        parameters = self._get_save_parameters()
+
         _type, encoding = mimetypes.guess_type(name)
         content_type = getattr(content, 'content_type', None)
         content_type = content_type or _type or self.default_content_type
 
         # setting the content_type in the key object is not enough.
-        parameters.update({'ContentType': content_type})
+        parameters['ContentType'] = content_type
 
         if self.gzip and content_type in self.gzip_content_types:
             content = self._compress_content(content)
-            parameters.update({'ContentEncoding': 'gzip'})
+            parameters['ContentEncoding'] = 'gzip'
         elif encoding:
             # If the content already has a particular encoding, set it
-            parameters.update({'ContentEncoding': encoding})
+            parameters['ContentEncoding'] = encoding
 
         encoded_name = self._encode_name(name)
         obj = self.bucket.Object(encoded_name)
@@ -500,22 +502,18 @@ class S3Boto3Storage(Storage):
         if isinstance(content, File):
             content = content.file
 
-        self._save_content(obj, content, parameters=parameters)
-        # Note: In boto3, after a put, last_modified is automatically reloaded
-        # the next time it is accessed; no need to specifically reload it.
+        obj.upload_fileobj(content, ExtraArgs=parameters)
         return cleaned_name
 
-    def _save_content(self, obj, content, parameters):
-        # only pass backwards incompatible arguments if they vary from the default
-        put_parameters = parameters.copy() if parameters else {}
+    def _get_save_parameters(self):
+        params = self.object_parameters.copy()
         if self.encryption:
-            put_parameters['ServerSideEncryption'] = 'AES256'
+            params['ServerSideEncryption'] = 'AES256'
         if self.reduced_redundancy:
-            put_parameters['StorageClass'] = 'REDUCED_REDUNDANCY'
+            params['StorageClass'] = 'REDUCED_REDUNDANCY'
         if self.default_acl:
-            put_parameters['ACL'] = self.default_acl
-        content.seek(0, os.SEEK_SET)
-        obj.upload_fileobj(content, ExtraArgs=put_parameters)
+            params['ACL'] = self.default_acl
+        return params
 
     def delete(self, name):
         name = self._normalize_name(self._clean_name(name))
